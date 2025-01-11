@@ -18,7 +18,7 @@ jobs:
       packages: write
 
     steps:
-      - name: Checkout repository
+      - name: Checkout application repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -48,7 +48,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.GITOPS_REPO }}
-          token: ${{ secrets.GITOPS_PAT }}
+          token: ${{ secrets.GITOPS_TOKEN }}  # Using GITOPS_TOKEN instead of GITOPS_PAT
           path: gitops
 
       - name: Update Kustomization
@@ -63,4 +63,4 @@ jobs:
           git config --global user.email 'action@github.com'
           git add apps/production/health-metrics/kustomization.yaml
           git commit -m "Update health-metrics image to ${{ steps.version.outputs.version }}" || echo "No changes to commit"
-          git push
+          git push origin main
