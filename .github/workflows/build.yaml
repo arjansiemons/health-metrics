@@ -8,34 +8,59 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  GITOPS_REPO: arjansiemons/homelab
 
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
 
     steps:
-    - uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Log in to the Container registry
-      uses: docker/login-action@v1
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate version
+        id: version
+        run: |
+          echo "version=$(git rev-list --count HEAD).$(date +%Y%m%d.%H%M)" >> $GITHUB_OUTPUT
 
-    - name: Extract metadata
-      id: meta
-      uses: docker/metadata-action@v3
-      with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Build and push
-      uses: docker/build-push-action@v2
-      with:
-        context: .
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops
+
+      - name: Update Kustomization
+        run: |
+          cd gitops/apps/production/health-metrics
+          sed -i "s|newTag:.*|newTag: ${{ steps.version.outputs.version }}|" kustomization.yaml
+          
+      - name: Commit and push GitOps changes
+        run: |
+          cd gitops
+          git config --global user.name 'GitHub Action'
+          git config --global user.email 'action@github.com'
+          git add apps/production/health-metrics/kustomization.yaml
+          git commit -m "Update health-metrics image to ${{ steps.version.outputs.version }}" || echo "No changes to commit"
+          git push
