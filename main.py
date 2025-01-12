@@ -26,7 +26,7 @@ app = FastAPI()
 data_store = os.environ.get("DATA_STORE", None)
 db_host = os.environ.get("DB_HOST", "health-db-rw.postgresql-system.svc.cluster.local")
 db_port = os.environ.get("DB_PORT", "5432")
-db_name = os.environ.get("DB_NAME", "health")
+db_name = os.environ.get("DB_NAME", "healthdb")
 db_user = os.environ.get("DB_USER", "postgres")
 db_password = os.environ.get("DB_PASSWORD", "postgres")
 
@@ -165,6 +165,11 @@ def ingest_metrics(metrics: list):
             write_metrics_batch(conn, transformed_data)
 
     logger.info("Data Ingestion Complete")
+
+
+@app.get("/")
+async def root():
+    return {"message": "Health Metrics API"}
 
 
 @app.post("/")
