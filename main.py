@@ -118,12 +118,16 @@ def write_metrics_batch(connection, metrics_data):
             RETURNING id
         """
 
+        # Modified to use bulk insert for tags
         tags_insert = """
             INSERT INTO metrics_tags (metric_id, key, value)
             VALUES (:metric_id, :key, :value)
         """
 
         inserted_metrics = 0
+        tags_to_insert = []
+
+        # First pass: insert all metrics and collect tag data
         for item in metrics_data:
             try:
                 result = connection.execute(
@@ -139,22 +143,28 @@ def write_metrics_batch(connection, metrics_data):
                 logger.debug(f"Inserted metric with ID: {metric_id}")
                 inserted_metrics += 1
 
-                tags_inserted = 0
+                # Collect tags for batch insert
                 for key, value in item["tags"].items():
-                    connection.execute(
-                        text(tags_insert),
-                        {"metric_id": metric_id, "key": key, "value": value},
+                    tags_to_insert.append(
+                        {"metric_id": metric_id, "key": key, "value": value}
                     )
-                    tags_inserted += 1
-                logger.debug(
-                    f"Inserted {tags_inserted} tags for metric ID: {metric_id}"
-                )
 
             except SQLAlchemyError as e:
                 logger.error(f"Error writing metric {item['measurement']}: {str(e)}")
                 raise
 
-        logger.info(f"Successfully wrote {inserted_metrics} metrics to database")
+        # Second pass: bulk insert all tags
+        if tags_to_insert:
+            try:
+                connection.execute(text(tags_insert), tags_to_insert)
+                logger.debug(f"Inserted {len(tags_to_insert)} tags in bulk")
+            except SQLAlchemyError as e:
+                logger.error(f"Error bulk inserting tags: {str(e)}")
+                raise
+
+        logger.info(
+            f"Successfully wrote {inserted_metrics} metrics and {len(tags_to_insert)} tags to database"
+        )
 
     except Exception as e:
         logger.error(f"Batch write failed: {str(e)}")
