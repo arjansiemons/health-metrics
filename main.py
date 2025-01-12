@@ -26,7 +26,6 @@ formatter = logging.Formatter(
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-# Add request_id to log context
 class RequestIdFilter(logging.Filter):
     def filter(self, record):
         if not hasattr(record, 'request_id'):
@@ -37,7 +36,7 @@ logger.addFilter(RequestIdFilter())
 
 app = FastAPI()
 
-# Database configuration
+# Database configuration with enhanced pool settings
 data_store = os.environ.get("DATA_STORE", None)
 db_host = os.environ.get("DB_HOST", "health-db-rw.postgresql-system.svc.cluster.local")
 db_port = os.environ.get("DB_PORT", "5432")
@@ -46,7 +45,12 @@ db_user = os.environ.get("DB_USER", "postgres")
 db_password = os.environ.get("DB_PASSWORD", "postgres")
 
 DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-engine = create_engine(DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=10
+)
 
 def log_timing(func):
     """Decorator to log function execution time"""
@@ -66,21 +70,30 @@ def log_timing(func):
 
 @contextmanager
 def get_db_connection():
-    """Context manager for database connections with enhanced logging"""
+    """Context manager for database connections with transaction management"""
+    connection = None
+    transaction = None
     try:
         connection = engine.connect()
-        logger.debug("Database connection established")
+        transaction = connection.begin()
+        logger.debug("Database connection established and transaction started")
         yield connection
+        transaction.commit()
+        logger.debug("Transaction committed successfully")
     except SQLAlchemyError as e:
-        logger.error(f"Database connection error: {str(e)}")
+        logger.error(f"Database connection/transaction error: {str(e)}")
+        if transaction is not None:
+            logger.debug("Rolling back transaction")
+            transaction.rollback()
         raise
     finally:
-        connection.close()
-        logger.debug("Database connection closed")
+        if connection is not None:
+            connection.close()
+            logger.debug("Database connection closed")
 
 @log_timing
 def write_metrics_batch(connection, metrics_data):
-    """Write a batch of metrics data to the database with enhanced logging"""
+    """Write a batch of metrics data to the database with enhanced logging and transaction management"""
     try:
         batch_size = len(metrics_data)
         logger.debug(f"Writing metrics batch of size {batch_size}")
@@ -96,6 +109,7 @@ def write_metrics_batch(connection, metrics_data):
             VALUES (:metric_id, :key, :value)
         """
 
+        inserted_metrics = 0
         for item in metrics_data:
             try:
                 result = connection.execute(
@@ -108,17 +122,23 @@ def write_metrics_batch(connection, metrics_data):
                     },
                 )
                 metric_id = result.scalar()
+                logger.debug(f"Inserted metric with ID: {metric_id}")
+                inserted_metrics += 1
 
+                tags_inserted = 0
                 for key, value in item["tags"].items():
                     connection.execute(
                         text(tags_insert),
                         {"metric_id": metric_id, "key": key, "value": value}
                     )
+                    tags_inserted += 1
+                logger.debug(f"Inserted {tags_inserted} tags for metric ID: {metric_id}")
+
             except SQLAlchemyError as e:
                 logger.error(f"Error writing metric {item['measurement']}: {str(e)}")
                 raise
 
-        logger.debug(f"Successfully wrote {batch_size} metrics")
+        logger.info(f"Successfully wrote {inserted_metrics} metrics to database")
 
     except Exception as e:
         logger.error(f"Batch write failed: {str(e)}")
@@ -126,7 +146,7 @@ def write_metrics_batch(connection, metrics_data):
 
 @log_timing
 def write_workouts_batch(connection, workouts_data):
-    """Write a batch of workout data to the database with enhanced logging"""
+    """Write a batch of workout data to the database with enhanced logging and transaction management"""
     try:
         batch_size = len(workouts_data)
         logger.debug(f"Writing workouts batch of size {batch_size}")
@@ -135,16 +155,21 @@ def write_workouts_batch(connection, workouts_data):
             INSERT INTO workouts (workout_id, timestamp, lat, lng, geohash)
             VALUES (:workout_id, :timestamp, :lat, :lng, :geohash)
             ON CONFLICT (workout_id, timestamp) DO NOTHING
+            RETURNING workout_id
         """
 
+        inserted_workouts = 0
         for workout in workouts_data:
             try:
-                connection.execute(text(workout_insert), workout)
+                result = connection.execute(text(workout_insert), workout)
+                if result.rowcount > 0:
+                    inserted_workouts += 1
+                    logger.debug(f"Inserted workout: {workout['workout_id']}")
             except SQLAlchemyError as e:
                 logger.error(f"Error writing workout {workout['workout_id']}: {str(e)}")
                 raise
 
-        logger.debug(f"Successfully wrote {batch_size} workout points")
+        logger.info(f"Successfully wrote {inserted_workouts} new workout points")
 
     except Exception as e:
         logger.error(f"Batch write failed: {str(e)}")
@@ -302,15 +327,35 @@ async def collect(healthkit_data: dict):
 
 @app.get("/health")
 async def health():
+    """Enhanced health check endpoint with permission verification"""
     logger.debug("Health check endpoint called")
     try:
         with get_db_connection() as conn:
+            # Check basic connectivity
             conn.execute(text("SELECT 1"))
-        logger.debug("Health check successful")
-        return "Ok"
+            
+            # Check current user and permissions
+            result = conn.execute(text("SELECT current_user")).scalar()
+            logger.debug(f"Connected as user: {result}")
+            
+            # Check table permissions
+            for table in ['metrics', 'metrics_tags', 'workouts']:
+                result = conn.execute(
+                    text(f"SELECT has_table_privilege(current_user, '{table}', 'INSERT')")
+                ).scalar()
+                logger.debug(f"Insert permission for {table}: {result}")
+                
+                if not result:
+                    raise SQLAlchemyError(f"Missing INSERT permission for table: {table}")
+            
+            logger.debug("Health check successful")
+            return {
+                "status": "Ok",
+                "timestamp": datetime.now().isoformat()
+            }
     except SQLAlchemyError as e:
         logger.error(f"Health check failed: {str(e)}")
-        raise HTTPException(status_code=503, detail="Database Unavailable")
+        raise HTTPException(status_code=503, detail=f"Database Unavailable: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
