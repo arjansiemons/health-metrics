@@ -49,6 +49,18 @@ db_password = os.environ.get("DB_PASSWORD", "postgres")
 DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_size=5, max_overflow=10)
 
+health_engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_timeout=2,
+    pool_size=1,
+    max_overflow=0,
+    connect_args={
+        "connect_timeout": 2,
+        "options": "-c statement_timeout=2000",  # 2 second query timeout
+    },
+)
+
 
 def log_timing(func):
     """Decorator to log function execution time"""
@@ -345,30 +357,23 @@ async def collect(healthkit_data: dict):
 
 @app.get("/health")
 async def health():
-    """Enhanced health check endpoint with proper timeout and error handling"""
+    """Lightweight health check with strict timeouts"""
     logger.debug("Health check endpoint called")
     try:
-        # Use a shorter timeout for health checks
-        engine_health = create_engine(
-            DATABASE_URL,
-            pool_pre_ping=True,
-            pool_timeout=3,  # 3 second timeout for health checks
-            connect_args={"connect_timeout": 3},  # postgres connection timeout
-        )
-
         # Quick connection test only
-        with engine_health.connect() as conn:
+        with health_engine.connect() as conn:
             conn.execute(text("SELECT 1")).scalar()
 
         return {"status": "Ok", "timestamp": datetime.now().isoformat()}
-    except SQLAlchemyError as e:
+
+    except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
-        # Don't raise HTTP exception - let the probe handle it
+        # Important: Return 503 status code for failed health checks
         return {
             "status": "Error",
-            "detail": "Database connection check failed",
+            "detail": str(e),
             "timestamp": datetime.now().isoformat(),
-        }
+        }, 503
 
 
 if __name__ == "__main__":
