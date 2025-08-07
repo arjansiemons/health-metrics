@@ -4,7 +4,7 @@ click==8.2.1
 fastapi==0.115.12
 future==1.0.0
 geolib==1.0.7
-greenlet==3.2.2
+greenlet==3.2.4
 h11==0.16.0
 idna==3.10
 psycopg2-binary==2.9.10
