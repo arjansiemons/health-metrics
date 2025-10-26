@@ -7,7 +7,7 @@ geolib==1.0.7
 greenlet==3.2.2
 h11==0.16.0
 idna==3.10
-psycopg2-binary==2.9.10
+psycopg2-binary==2.9.11
 pydantic==2.11.4
 pydantic-core==2.34.1
 python-dotenv==1.1.0
